@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#07101f">
+  <meta name="description" content="마이크 입력에서 구조요청 신호를 감지하는 수업용 AI 관제 웹앱">
+  <title>RESCUE SIGNAL · AI 구조요청 신호탐지</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@1.3.1/dist/tf.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/speech-commands@0.4.0/dist/speech-commands.min.js"></script>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body class="min-h-screen text-slate-100 antialiased">
+  <div id="alertOverlay" class="alert-overlay hidden" role="alert" aria-live="assertive" aria-atomic="true">
+    <div class="alert-wash"></div>
+    <div class="alert-copy">
+      <span class="alert-kicker">긴급 신호</span>
+      <p>구조요청 신호 감지!</p>
+      <span id="alertDetail" class="alert-detail"></span>
+    </div>
+  </div>
+
+  <header class="site-header">
+    <div class="shell header-inner">
+      <a class="brand" href="#main" aria-label="구조요청 신호탐지 홈">
+        <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+        <span>
+          <strong>AI 구조 신호 관제</strong>
+          <small>AI 구조요청 신호탐지</small>
+        </span>
+      </a>
+      <div class="header-meta">
+        <span class="system-clock" id="systemClock" aria-label="현재 시각">--:--:--</span>
+        <span id="modePill" class="mode-pill mode-idle"><i></i>대기 중</span>
+      </div>
+    </div>
+  </header>
+
+  <main id="main" class="shell main-layout">
+    <section class="intro" aria-labelledby="pageTitle">
+      <div>
+        <p class="eyebrow">공주정보고등학교 소방안전과 · 실습용 데모</p>
+        <h1 id="pageTitle">소리로 구조 신호를<br><em>먼저 발견합니다.</em></h1>
+      </div>
+      <p class="intro-copy">브라우저 마이크로 비명, 도움 요청, 두드림을 실시간 분석합니다. 모델이 없어도 Mock 모드로 전체 흐름을 시험할 수 있습니다.</p>
+    </section>
+
+    <section class="control-panel panel" aria-labelledby="settingsTitle">
+      <div class="section-head">
+        <div>
+          <p class="section-index">01</p>
+          <h2 id="settingsTitle">감지 설정</h2>
+        </div>
+        <p>모델과 경보 민감도를 설정한 뒤 감시를 시작하세요.</p>
+      </div>
+
+      <div class="input-grid">
+        <label class="field">
+          <span>Teachable Machine 모델 주소</span>
+          <input id="modelUrl" type="url" inputmode="url" autocomplete="url" placeholder="https://teachablemachine.withgoogle.com/models/…">
+          <small>모델이 없다면 아래의 Mock 모드를 사용하세요.</small>
+        </label>
+        <label class="field">
+          <span>Gemini API 키 <b>선택</b></span>
+          <input id="geminiKey" type="password" autocomplete="off" spellcheck="false" placeholder="비워두면 기본 설명을 사용합니다">
+          <small>키는 저장하지 않으며 설명 요청 때만 Gemini로 전송합니다.</small>
+        </label>
+      </div>
+
+      <div class="control-row">
+        <label class="check-control">
+          <input id="mockMode" type="checkbox">
+          <span class="check-ui" aria-hidden="true"></span>
+          <span><strong>Mock 모드</strong><small>모델·마이크 없이 시험</small></span>
+        </label>
+        <label class="check-control">
+          <input id="muteSiren" type="checkbox">
+          <span class="check-ui" aria-hidden="true"></span>
+          <span><strong>사이렌 끄기</strong><small>화면 경보는 유지</small></span>
+        </label>
+        <label class="threshold-control" for="threshold">
+          <span><strong>경보 민감도</strong><small>판정 기준</small></span>
+          <input id="threshold" type="range" min="10" max="99" value="75">
+          <output id="thresholdValue" for="threshold">75%</output>
+        </label>
+        <div class="actions">
+          <button id="startBtn" class="button button-start" type="button"><span aria-hidden="true">▶</span> 감시 시작</button>
+          <button id="stopBtn" class="button button-stop" type="button" disabled><span aria-hidden="true">■</span> 중지</button>
+        </div>
+      </div>
+
+      <p id="message" class="message hidden" role="status" aria-live="polite"></p>
+
+      <div id="labelSection" class="label-section hidden">
+        <div>
+          <strong>경보 대상 클래스</strong>
+          <small>체크한 소리가 기준값을 넘으면 경보가 발생합니다.</small>
+        </div>
+        <div id="labelChecks" class="label-checks"></div>
+      </div>
+    </section>
+
+    <section class="monitor-grid" aria-label="실시간 관제 화면">
+      <article class="status-panel panel">
+        <div class="section-label"><span>02</span> 감시 상태</div>
+        <div class="status-stage">
+          <div class="radar-rings" aria-hidden="true"><i></i><i></i><i></i></div>
+          <div id="statusLight" class="status-light status-idle"><span></span></div>
+        </div>
+        <div class="status-copy">
+          <p id="statusText" aria-live="polite">대기 중</p>
+          <span id="statusSub">시작 버튼을 누르면 감지를 시작합니다.</span>
+        </div>
+      </article>
+
+      <article class="gauge-panel panel">
+        <div class="section-head compact">
+          <div>
+            <p class="section-index">03</p>
+            <h2>실시간 분류 확률</h2>
+          </div>
+          <span class="live-note"><i></i>실시간 분석</span>
+        </div>
+        <div id="gauges" class="gauges" aria-live="polite">
+          <div class="empty-state">
+            <span aria-hidden="true">∿</span>
+            <p>아직 수신된 데이터가 없습니다.</p>
+            <small>감시를 시작하면 소리별 확률이 표시됩니다.</small>
+          </div>
+        </div>
+      </article>
+    </section>
+
+    <section class="log-panel panel" aria-labelledby="logTitle">
+      <div class="section-head compact">
+        <div>
+          <p class="section-index">04</p>
+          <h2 id="logTitle">감지 기록 <span id="logCount" class="count-badge">0건</span></h2>
+        </div>
+        <button id="clearLog" class="clear-button" type="button">기록 비우기</button>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th scope="col">감지 시각</th>
+              <th scope="col">신호 종류</th>
+              <th scope="col">확률</th>
+              <th scope="col">상황 설명</th>
+            </tr>
+          </thead>
+          <tbody id="logBody">
+            <tr id="logEmpty" class="empty-row"><td colspan="4">감지 기록이 없습니다.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="shell">
+      <span>AI 구조신호 연구실 · 교육용 시제품</span>
+      <span>음성 원본은 저장하거나 외부로 보내지 않습니다.</span>
+    </div>
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>
